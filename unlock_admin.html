@@ -41,6 +41,9 @@
   .note { color:var(--amber); font-size:11px; }
   .abtns { margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
   .abtns .hint { font-size:11.5px; color:#8fa2bd; }
+  .linkrow { display:none; gap:8px; align-items:center; padding:0 14px 12px; }
+  .linkrow input { flex:1; font-size:12px; padding:7px 9px; border-radius:6px; border:1px solid #31507c;
+                   background:#0e1c31; color:#cfe0f5; font-family:Consolas,monospace; }
   .empty { text-align:center; color:#8fa2bd; padding:40px 10px; font-size:15px; }
   .err { color:#f2988d; }
   #arcline { text-align:center; color:#5f7392; font-size:12px; padding:8px; }
@@ -62,6 +65,7 @@ const API = 'https://opfxjmqscafxfnavjbfa.supabase.co/functions/v1/unlock';
 // param still overrides it, e.g. after a key rotation.
 const K = new URLSearchParams(location.search).get('k') || 'YY9V9LDkxOLhIm5bBiVnULDV';
 const openSet = new Set();   // which order cards are expanded (survives refresh)
+const linkOpen = new Set();  // which customer-link boxes are shown
 let DATA = null, busy = false;
 
 function esc(t){ return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -79,7 +83,7 @@ function orderCard(o){
   const rows = o.assets.map(a => {
     const un = a.status === 'unlocked';
     return '<tr class="' + (un ? 'unlocked' : '') + '">' +
-      '<td><input type="checkbox" data-o="' + esc(o.order) + '" value="' + esc(a.tag) + '"></td>' +
+      '<td><input type="checkbox" class="rowck" data-o="' + esc(o.order) + '" value="' + esc(a.tag) + '"></td>' +
       '<td>' + esc(a.tag) + '</td><td>' + esc(a.serial || '') + '</td><td>' + esc(a.model || '') + '</td>' +
       '<td>' + esc(a.manufacturer || '') + '</td><td>' + esc(a.category || '') + '</td>' +
       '<td>P' + esc(a.phase) + '</td>' +
@@ -95,12 +99,17 @@ function orderCard(o){
       phaseChip + doneChip +
       '<span class="chip c-days">' + days(o.created_at) + 'd open</span>' +
       '<span class="obtns" onclick="event.stopPropagation()">' +
-        '<button class="b-link" onclick="copyLink(\'' + esc(o.order) + '\')">&#128203; Customer link</button>' +
+        '<button class="b-link" onclick="showLink(\'' + esc(o.order) + '\')">&#128203; Customer link</button>' +
         '<button class="b-arch" onclick="archive(\'' + esc(o.order) + '\')">Archive</button>' +
       '</span>' +
     '</div>' +
+    '<div class="linkrow" id="lnk-' + esc(o.order) + '" style="display:' + (linkOpen.has(o.order) ? 'flex' : 'none') + '">' +
+      '<input readonly value="' + esc(customerLink(o)) + '" onclick="this.select()">' +
+      '<button class="b-link" onclick="copyNow(\'' + esc(o.order) + '\', this)">Copy</button>' +
+    '</div>' +
     '<div class="odetail" style="display:' + (shown ? 'block' : 'none') + '"><div class="twrap">' +
-      '<table><tr><th></th><th>Tag</th><th>Serial</th><th>Model</th><th>Mfg</th><th>Category</th><th>Phase</th><th>Status</th><th>By</th></tr>' +
+      '<table><tr><th><input type="checkbox" class="allck" title="Select all" onclick="selAll(\'' + esc(o.order) + '\', this.checked)"></th>' +
+      '<th>Tag</th><th>Serial</th><th>Model</th><th>Mfg</th><th>Category</th><th>Phase</th><th>Status</th><th>By</th></tr>' +
       rows + '</table></div>' +
       '<div class="abtns">' +
         '<button class="b-p2" onclick="act(\'' + esc(o.order) + '\',\'flag_p2\')">&#128274; Flag selected Phase 2</button>' +
@@ -110,28 +119,54 @@ function orderCard(o){
     '</div></div>';
 }
 
+function card(oid){ return document.getElementById('ord-' + oid); }
+
 function render(){
   const d = DATA;
   document.getElementById('stamp').textContent =
     d.orders.length + ' open order' + (d.orders.length === 1 ? '' : 's') + ' · updated ' + new Date().toLocaleTimeString();
+  // Snapshot checked devices so the periodic re-render never wipes a
+  // selection the supervisor is mid-way through making.
+  const sel = {};
+  document.querySelectorAll('input.rowck:checked').forEach(c => {
+    (sel[c.dataset.o] = sel[c.dataset.o] || {})[c.value] = true;
+  });
   document.getElementById('orders').innerHTML = d.orders.length
     ? d.orders.map(orderCard).join('')
     : '<div class="empty">No open unlock orders — new ones appear automatically when Data Capture completes.</div>';
+  document.querySelectorAll('input.rowck').forEach(c => {
+    if (sel[c.dataset.o] && sel[c.dataset.o][c.value]) c.checked = true;
+  });
   document.getElementById('arcline').textContent = d.archived ? d.archived + ' archived order(s) hidden' : '';
 }
 
 function toggle(oid){
   if (openSet.has(oid)) openSet.delete(oid); else openSet.add(oid);
-  const el = document.querySelector('#ord-' + CSS.escape(oid) + ' .odetail');
+  const el = card(oid) && card(oid).querySelector('.odetail');
   if (el) el.style.display = openSet.has(oid) ? 'block' : 'none';
 }
 
-function copyLink(oid){
-  const o = DATA.orders.find(x => x.order === oid);
-  if (!o) return;
-  navigator.clipboard.writeText(customerLink(o)).then(
-    () => alert('Customer link copied:\n\n' + customerLink(o)),
-    () => prompt('Copy the customer link:', customerLink(o)));
+function selAll(oid, on){
+  const c = card(oid);
+  if (c) c.querySelectorAll('input.rowck').forEach(x => { x.checked = on; });
+}
+
+function showLink(oid){
+  if (linkOpen.has(oid)) linkOpen.delete(oid); else linkOpen.add(oid);
+  const el = document.getElementById('lnk-' + oid);
+  if (!el) return;
+  el.style.display = linkOpen.has(oid) ? 'flex' : 'none';
+  if (linkOpen.has(oid)) { const inp = el.querySelector('input'); inp.focus(); inp.select(); }
+}
+
+function copyNow(oid, btn){
+  const inp = document.getElementById('lnk-' + oid).querySelector('input');
+  inp.focus(); inp.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) {}
+  try { navigator.clipboard.writeText(inp.value).then(() => { btn.textContent = 'Copied ✓'; }, () => {}); } catch (e) {}
+  if (ok) btn.textContent = 'Copied ✓';
+  setTimeout(() => { btn.textContent = 'Copy'; }, 2500);
 }
 
 async function post(body){
@@ -143,7 +178,7 @@ async function post(body){
 
 async function act(oid, action){
   if (busy) return;
-  const tags = [...document.querySelectorAll('#ord-' + CSS.escape(oid) + ' input:checked')].map(c => c.value);
+  const tags = [...card(oid).querySelectorAll('input.rowck:checked')].map(c => c.value);
   if (!tags.length) return alert('Select one or more devices first (checkboxes).');
   const verb = action === 'flag_p2' ? 'flag as PHASE 2 (locked)' : 'mark UNLOCKED';
   if (!confirm(verb + ' — ' + tags.length + ' device(s) on order ' + oid + '?')) return;
