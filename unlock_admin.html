@@ -61,9 +61,19 @@
 </main>
 <script>
 const API = 'https://opfxjmqscafxfnavjbfa.supabase.co/functions/v1/unlock';
-// Supervisor key baked in (Rob 2026-08-20: "just put the key in") — a ?k= URL
-// param still overrides it, e.g. after a key rotation.
-const K = new URLSearchParams(location.search).get('k') || 'YY9V9LDkxOLhIm5bBiVnULDV';
+// Supervisor key: NOT in this page (the repo is public - security review
+// 2026-10-22). Asked once per browser and remembered; a ?k= link also works
+// and is removed from the address bar after it is saved.
+const KS = 'aer_unlock_sup';
+function getKey(){
+  let k = new URLSearchParams(location.search).get('k');
+  if (k) { try { localStorage.setItem(KS, k); } catch(_){} history.replaceState(null, '', location.pathname); return k; }
+  try { k = localStorage.getItem(KS); } catch(_){}
+  if (!k) { k = (prompt('Supervisor key:') || '').trim(); if (k) { try { localStorage.setItem(KS, k); } catch(_){} } }
+  return k || '';
+}
+function forgetKey(){ try { localStorage.removeItem(KS); } catch(_){} }
+let K = getKey();
 const openSet = new Set();   // which order cards are expanded (survives refresh)
 const linkOpen = new Set();  // which customer-link boxes are shown
 let DATA = null, busy = false;
@@ -199,11 +209,16 @@ async function archive(oid){
 
 async function load(){
   if (!K) {
-    document.getElementById('orders').innerHTML = '<div class="empty err">Missing supervisor key — open this page from your saved link (…unlock_admin.html?k=YOUR-KEY).</div>';
+    document.getElementById('orders').innerHTML = '<div class="empty err">Supervisor key needed. <a href="#" onclick="location.reload();return false">Enter it</a></div>';
     return;
   }
   try {
     const r = await fetch(API + '?view=all&k=' + encodeURIComponent(K), {cache:'no-store'});
+    if (r.status === 401 || r.status === 403) {
+      forgetKey(); K = '';
+      document.getElementById('orders').innerHTML = '<div class="empty err">That supervisor key was not accepted. <a href="#" onclick="location.reload();return false">Try again</a></div>';
+      return;
+    }
     const d = await r.json();
     if (!r.ok || !d.ok) throw new Error(d.error || 'request failed');
     DATA = d; render();
